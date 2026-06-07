@@ -15,8 +15,7 @@
  *                                                                         *
  * This file is part of NexMon.                                            *
  *                                                                         *
- * Copyright (c) 2024 NexMon Team                                          *
- * Copyright (c) 2024 Jakob Link <jlink@seemoo.de>                         *
+ * Copyright (c) 2016 NexMon Team                                          *
  *                                                                         *
  * NexMon is free software: you can redistribute it and/or modify          *
  * it under the terms of the GNU General Public License as published by    *
@@ -34,65 +33,68 @@
  **************************************************************************/
 // Modified by Fangzhan for RTCSI
 
-#ifndef LOCAL_WRAPPER_C
-#define LOCAL_WRAPPER_C
+#pragma NEXMON targetregion "patch"
 
-#include <firmware_version.h>
-#include <structs.h>
-#include <stdarg.h>
+#include <firmware_version.h>   // definition of firmware version macros
+#include <debug.h>              // contains macros to access the debug hardware
+#include <wrapper.h>            // wrapper definitions for functions that already exist in the firmware
+#include <structs.h>            // structures that are used by the code in the firmware
+#include <helper.h>             // useful helper functions
+#include <patcher.h>            // macros used to craete patches such as BLPatch, BPatch, ...
+#include <rates.h>              // rates used to build the ratespec for frame injection
+#include <nexioctls.h>          // ioctls added in the nexmon patch
+#include <capabilities.h>       // capabilities included in a nexmon patch
+#include "local_wrapper.h"
 
-#ifndef LOCAL_WRAPPER_H
-    // if this file is not included in the local_wrapper.h file, create dummy functions
-    #define VOID_DUMMY { ; }
-    #define RETURN_DUMMY { ; return 0; }
+char
+sendframe(struct wlc_info *wlc, struct sk_buff *p, unsigned int fifo, unsigned int rate)
+{
+    char ret;
 
-    #define AT(CHIPVER, FWVER, ADDR) __attribute__((weak, at(ADDR, "dummy", CHIPVER, FWVER)))
-#else
-    // if this file is included in the wrapper.h file, create prototypes
-    #define VOID_DUMMY ;
-    #define RETURN_DUMMY ;
-    #define AT(CHIPVER, FWVER, ADDR)
-#endif
+    // this unmutes the currently used channel and allows to send on "quiet/passive" channels
+    wlc_bmac_mute(wlc->hw, 0, 0);
+
+    if (wlc->band->bandtype == WLC_BAND_5G && rate < RATES_RATE_6M) {
+        rate = RATES_RATE_6M;
+    }
+
+    if (wlc->hw->up) {
+        ret = wlc_sendctl(wlc, p, wlc->active_queue, wlc->band->hwrs_scb, fifo, rate, 0);
+    } else {
+        ret = wlc_sendctl(wlc, p, wlc->active_queue, wlc->band->hwrs_scb, fifo, rate, 1);
+        printf("ERR: wlc down\n");
+    }
+
+    return ret;
+}
 
 
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x219864)
+// check null pointer problem 
+// https://github.com/seemoo-lab/nexmon/issues/335
+__attribute__((naked))
 void
-wlc_phy_force_rfseq_acphy__local(void *pi, uint8 cmd)
-VOID_DUMMY
+check_scb(void)
+{
+     asm(
+        "cmp r6, #0\n"             // check if pkt->scb is null
+        "bne nonnull\n"
+        "add lr,lr,0x178\n"        // if null adapt lr to jump out of pkt dequeue loop
+        "b return\n"
+        "nonnull:\n"
+        "ldr.w r3,[r7,#0xe8]\n"    // get scb->cfg->flags (crashed the chip when scb was null)
+        "return:\n"
+        "push {lr}\n"
+        "pop {pc}\n"
+    );  
+}
 
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x217292)
+__attribute__((at(0x1AF378, "", CHIP_VER_BCM43455c0, FW_VER_7_45_189)))
+__attribute__((at(0x1AABB0, "", CHIP_VER_BCM43455c0, FW_VER_7_45_206)))
+__attribute__((naked))
 void
-wlc_phy_resetcca_acphy__local(void *pi)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x1df5a8)
-int
-phy_utils_read_phyreg(void *pi, int addr)
-RETURN_DUMMY
-
-// AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x19A548)
-// void
-// hndrte_print_memuse(void)
-// VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x58950)
-bool
-wlc_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-RETURN_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x49874)
-void
-wlc_bmac_mute(struct wlc_hw_info *wlc_hw, bool on, uint32 flags)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x57b70)
-void
-wlc_clr_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-VOID_DUMMY
-
-
-#undef VOID_DUMMY
-#undef RETURN_DUMMY
-#undef AT
-
-#endif /*LOCAL_WRAPPER_C*/
+patch_null_pointer_scb(void)
+{
+    asm(
+        "bl check_scb\n"    // branch to null pointer check instead of accessing possibly invalid cfg
+    );  
+}

@@ -54,6 +54,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  *
  *                                                                         *
  **************************************************************************/
+// Modified by Fangzhan for RTCSI
 
 #pragma NEXMON targetregion "patch"
 
@@ -68,6 +69,8 @@
 #include <version.h>            // version information
 #include <argprintf.h>          // allows to execute argprintf to print into the arg buffer
 #include <objmem.h>
+#include "customized_timer.h"
+#include "rtcsi.h"
 
 #if NEXMON_CHIP == CHIP_VER_BCM4366c0
 #define SHM_CSI_COLLECT         0xB80
@@ -115,16 +118,84 @@
 #define COREMASK                0x8a7
 #endif
 
-#if NEXMON_CHIP == CHIP_VER_BCM4366c0
-uint32 no_phase_jumps = 0;
-#endif
+// void set_tx_pwr(struct wlc_info *wlc, int pwr_dbm){
+//     char val_name[] = "qtxpower";
+//     int qpwr = pwr_dbm*4;
+//     int name_len = strlen(val_name)+1;
+//     int val_len = sizeof(qpwr);
+//     char *cmd = malloc(name_len+val_len, 0);
+//     memcpy(cmd, val_name, name_len);
+//     memcpy(cmd + name_len, &qpwr, val_len);
+//     wlc_ioctl(wlc, WLC_SET_VAR, cmd, name_len+val_len, 0);
+//     free(cmd);
+// }
+uint8_t block_escan = 1;
+
+static void
+exp_set_gains(struct phy_info *pi, uint8 ipa, uint8 txlpf, uint8 pga, uint8 pad, uint8 txgm, uint8 bbmult)
+{
+    wlc_phy_txpwrctrl_enable_acphy(pi, 0);
+    ac_txgain_setting_t gains = { 0 };
+    gains.ipa = ipa;  // default: 255 (650 mW)
+    gains.txlpf = txlpf;  // default: 0
+    gains.pga = pga;
+    gains.pad = pad;  // default: 255 (100 mW)
+    gains.txgm = txgm; // default: 255
+    gains.bbmult = bbmult; // maximum value: 255, for iq transmissions set to 64, normally below
+    wlc_phy_txcal_txgain_cleanup_acphy(pi, &gains);
+}
+
+static void
+exp_set_gains_by_index(struct phy_info *pi, int8 index)
+{
+    ac_txgain_setting_t gains = { 0 };
+    wlc_phy_txpwrctrl_enable_acphy(pi, 0);
+    wlc_phy_get_txgain_settings_by_index_acphy(pi, &gains, index);
+    wlc_phy_txcal_txgain_cleanup_acphy(pi, &gains);
+}
+
+void print_cfg(rtcsi_dev_cfg *cfg){
+    printf("\n");
+    printf("version: %d\n", cfg->version);
+    printf("chanspec: 0x%04x\n", cfg->chanspec);
+    printf("tx_gain_idx: %d\n", cfg->tx_gain_idx);
+    printf("mode: %d\n", cfg->mode);
+
+    printf("mac: ");
+    for(int i = 0; i < MAC_ADDR_LEN; i++){
+        printf("%02x ",  cfg->mac[i]);
+    }
+    printf("\n");
+
+    printf("responder_mac: ");
+    for(int i = 0; i < MAX_NUM_RESPONDER; i++){
+        printf("\n");
+        for(int j= 0; j < MAC_ADDR_LEN; j++){
+            printf("%02x ",  cfg->responder_mac[i][j]);
+        }
+    }
+    printf("\n");
+
+    printf("num_responder: %d\n", cfg->num_responder);
+    printf("initiator_sounding_period: %d\n", cfg->initiator_sounding_period);
+    printf("\n");
+    printf("mac_white_list: ");
+    for(int i = 0; i < MAX_MAC_WHITE_LIST_LEN; i++){
+        printf("\n");
+        for(int j= 0; j < MAC_ADDR_LEN; j++){
+            printf("%02x ",  cfg->mac_white_list[i][j]);
+        }
+    }
+    printf("\n");
+    printf("mac_white_list_len: %d\n", cfg->mac_white_list_len);    
+    printf("\n");
+}
 
 int 
 wlc_ioctl_hook(struct wlc_info *wlc, int cmd, char *arg, int len, void *wlc_if)
 {
     int ret = IOCTL_ERROR;
     argprintf_init(arg, len);
-
     switch(cmd) {
         case 500:   // set csi_collect
         {
@@ -156,6 +227,11 @@ wlc_ioctl_hook(struct wlc_info *wlc, int cmd, char *arg, int len, void *wlc_if)
             set_mpc(wlc, 0);
             // set the channel
             set_chanspec(wlc, params->chanspec);
+            // disbale retransmission
+            set_intioctl(wlc, WLC_SET_LRL, 1);
+            set_intioctl(wlc, WLC_SET_SRL, 1);
+            // set tx power
+            set_intioctl(wlc, WLC_SET_TXPWR, 30);
             // write shared memory
             if (wlc->hw->up && len > 1) {
                 wlc_bmac_write_shm(wlc->hw, SHM_CSI_COLLECT * 2, params->csi_collect);
@@ -189,32 +265,77 @@ wlc_ioctl_hook(struct wlc_info *wlc, int cmd, char *arg, int len, void *wlc_if)
             }
             break;
         }
-        case 502:	// force deaf mode
+        
+        case 600:   // load rtcsi parameters and run
         {
-                if (wlc->hw->up && len > 1) {
-            wlc_bmac_write_shm(wlc->hw, FORCEDEAF * 2, 1);
-            ret = IOCTL_SUCCESS;
+            uint8  csi_collect = 1;                         // trigger csi collect (1: on, 0: off)
+            uint8  core_nss_mask = 0x11;                    // coremask and spatialstream mask
+            uint8  use_pkt_filter = 0;                      // trigger first packet byte filter (1: on, 0: off)
+            uint8  first_pkt_byte = 0x08;         // first packet byte to filter for
+            uint16 n_mac_addr = 0;                          // number of mac addresses to filter for (0: off, 1-4: on,use src_mac_0-3)
+            uint16 delay = 0;                               // delay between extractions in us       
+
+            rtcsi_dev_cfg *cfg = (rtcsi_dev_cfg *) arg;
+            cfg->csi_collect_mode = CSI_COLLECT_RTCSI;
+            print_cfg(cfg);
+
+            // print_agc_gain_table(wlc->hw->band->pi);
+            if (wlc->hw->up && len > 1) {
+                wlc_bmac_write_shm(wlc->hw, SHM_CSI_COLLECT * 2, csi_collect);
+                wlc_bmac_write_shm(wlc->hw, NSSMASK * 2, ((core_nss_mask)&0xf0)>>4);
+                wlc_bmac_write_shm(wlc->hw, COREMASK * 2, (core_nss_mask)&0x0f);
+                wlc_bmac_write_shm(wlc->hw, N_CMP_SRC_MAC * 2, cfg->mac_white_list_len <= MAX_MAC_WHITE_LIST_LEN?cfg->mac_white_list_len:MAX_MAC_WHITE_LIST_LEN);
+
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_0_0 * 2, *(uint16_t *)(&cfg->mac_white_list[0][0]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_0_1 * 2, *(uint16_t *)(&cfg->mac_white_list[0][2]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_0_2 * 2, *(uint16_t *)(&cfg->mac_white_list[0][4]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_1_0 * 2, *(uint16_t *)(&cfg->mac_white_list[1][0]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_1_1 * 2, *(uint16_t *)(&cfg->mac_white_list[1][2]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_1_2 * 2, *(uint16_t *)(&cfg->mac_white_list[1][4]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_2_0 * 2, *(uint16_t *)(&cfg->mac_white_list[2][0]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_2_1 * 2, *(uint16_t *)(&cfg->mac_white_list[2][2]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_2_2 * 2, *(uint16_t *)(&cfg->mac_white_list[2][4]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_3_0 * 2, *(uint16_t *)(&cfg->mac_white_list[3][0]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_3_1 * 2, *(uint16_t *)(&cfg->mac_white_list[3][2]));
+                wlc_bmac_write_shm(wlc->hw, CMP_SRC_MAC_3_2 * 2, *(uint16_t *)(&cfg->mac_white_list[3][4]));
+
+                wlc_bmac_write_shm(wlc->hw, APPLY_PKT_FILTER * 2, use_pkt_filter);
+                wlc_bmac_write_shm(wlc->hw, PKT_FILTER_BYTE * 2, first_pkt_byte);
+                wlc_bmac_write_shm(wlc->hw, FIFODELAY * 2, delay);
             }
+
+            // deactivate scanning
+            set_scansuppress(wlc, 1);
+            // deactivate minimum power consumption
+            set_mpc(wlc, 0);
+            // set the channel
+            set_chanspec(wlc, cfg->chanspec);
+            // disbale retransmission
+            set_intioctl(wlc, WLC_SET_LRL, 1);
+            set_intioctl(wlc, WLC_SET_SRL, 1);      
+            // Minimun Contention Window
+            set_intioctl(wlc, WLC_SET_CWMIN , 1);
+            set_intioctl(wlc, WLC_SET_CWMAX, 255);        
+
+            struct phy_info *pi = wlc->hw->band->pi;
+            if (cfg->tx_gain_idx==0){
+                set_intioctl(wlc, WLC_SET_TXPWR, 30);
+            }else{
+                exp_set_gains_by_index(pi, cfg->tx_gain_idx);
+            }
+            
+            // print_agc_gain_table(wlc->hw->band->pi);
+
+            if(cfg->mode==RTCSI_MODE_INITIATOR){         //initiator mode
+                init_timer(wlc);
+            }
+            init_rtcsi_dev(cfg);
+            timer_flag = TIMER_RUNNING;
+            printf("wlc_ioctl 600 called\n");
+            ret = IOCTL_SUCCESS;
             break;
         }
-        case 503:	// clean deaf mode
-        {
-                if (wlc->hw->up && len > 1) {
-            wlc_bmac_write_shm(wlc->hw, CLEANDEAF * 2, 1);
-            ret = IOCTL_SUCCESS;
-            }
-                break;
-        }
-#if NEXMON_CHIP == CHIP_VER_BCM4366c0
-        case 526:
-        {
-            if (wlc->hw->up && len >= sizeof(uint32)) {
-                no_phase_jumps = *(uint32 *)arg;
-                ret = IOCTL_SUCCESS;
-            }
-            break;
-        }
-#endif
+
         case NEX_READ_OBJMEM:
         {
             set_mpc(wlc, 0);
@@ -230,7 +351,15 @@ wlc_ioctl_hook(struct wlc_info *wlc, int cmd, char *arg, int len, void *wlc_if)
         }
 
         default:
-            ret = wlc_ioctl(wlc, cmd, arg, len, wlc_if);
+            // printf("default\n");
+            // printf("cmd: %d\n", cmd);
+            // printf("arg: %s\n", arg);
+
+            if(block_escan && cmd==WLC_SET_VAR	&& strncmp(arg, "escan", 5) == 0){
+                ret = -26;
+            }else{
+                ret = wlc_ioctl(wlc, cmd, arg, len, wlc_if);
+            }
     }
 
     return ret;

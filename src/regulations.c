@@ -54,6 +54,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  *
  *                                                                         *
  **************************************************************************/
+// Modified by Fangzhan for RTCSI
 
 #pragma NEXMON targetregion "patch"
 
@@ -62,6 +63,9 @@
 #include <patcher.h>
 #include <wrapper.h>
 #include <channels.h>
+#include <structs.h>
+#include <local_wrapper.h>
+
 
 // Nop the following call to keep user tx power targets
 //    Choose least of user and now combined regulatory/hw targets
@@ -192,6 +196,11 @@ __attribute__((at(0x1fb08e, "", CHIP_VER_BCM4339, FW_VER_6_37_32_RC23_34_43_r639
 __attribute__((aligned(1)))
 unsigned char _valid_channel_5g_20m[] = { 0x22, 0x2e, 0x04, 0x24 };
 
+// https://github.com/seemoo-lab/nexmon_csi/issues/2#issuecomment-539528736:
+// However, the current state of the regulations patch for the bcm43455c0 might lack
+// some features so that you can not use completely arbitrary chanspecs by only adding
+// them to that list. So for now you'll have to test and go with the chanspecs that are working.
+
 unsigned short additional_valid_chanspecs[] = {
     CH80MHZ_CHSPEC(6, WL_CHANSPEC_CTL_SB_L),
     CH20MHZ_CHSPEC(7),
@@ -217,22 +226,67 @@ unsigned short additional_valid_chanspecs[] = {
 #if (NEXMON_CHIP == CHIP_VER_BCM43455c0)
     0xe02a, // 36/80
     0xe29b, // 157/80
+    CH20MHZ_CHSPEC(32),
+    CH20MHZ_CHSPEC(34),
+    CH20MHZ_CHSPEC(36),
+    CH20MHZ_CHSPEC(40),
+    CH20MHZ_CHSPEC(44),
+    CH20MHZ_CHSPEC(48),
+    CH20MHZ_CHSPEC(50),
+    CH20MHZ_CHSPEC(52),
+    CH20MHZ_CHSPEC(56),
+    CH20MHZ_CHSPEC(60),
+    CH20MHZ_CHSPEC(64),
+    CH20MHZ_CHSPEC(100),
+    CH20MHZ_CHSPEC(104),
+    CH20MHZ_CHSPEC(108),
+    CH20MHZ_CHSPEC(112),
+    CH20MHZ_CHSPEC(116),
+    CH20MHZ_CHSPEC(120),
+    CH20MHZ_CHSPEC(124),
+    CH20MHZ_CHSPEC(128),
+    CH20MHZ_CHSPEC(132),
+    CH20MHZ_CHSPEC(136),
+    CH20MHZ_CHSPEC(140),
+    CH20MHZ_CHSPEC(144),
+    CH20MHZ_CHSPEC(149),
+    CH20MHZ_CHSPEC(153),
+    CH20MHZ_CHSPEC(157),
+    CH20MHZ_CHSPEC(161),
+    CH20MHZ_CHSPEC(165),
+    CH20MHZ_CHSPEC(169),
 #endif
 };
+
 
 int
 wlc_valid_chanspec_ext_hook(void *wlc_cm, unsigned short chanspec, int dualband)
 {
-	int valid = wlc_valid_chanspec_ext(wlc_cm, chanspec, dualband);
-	int i;
+    uint32_t i;
 
-	if (!valid && dualband == 1)
-		for (i = 0; i < sizeof(additional_valid_chanspecs)/sizeof(additional_valid_chanspecs[0]); i++)
-			valid |= additional_valid_chanspecs[i] == chanspec;
-		
+    int valid = wlc_valid_chanspec_ext(wlc_cm, chanspec, dualband);
+    if (!valid && dualband == 1) {
+        for (i = 0; i < sizeof(additional_valid_chanspecs)/sizeof(additional_valid_chanspecs[0]); i++) {
+            valid |= additional_valid_chanspecs[i] == chanspec;
+        }
+    }
+
     return valid;
 }
-
 __attribute__((at(0x58eb6, "flashpatch", CHIP_VER_BCM43455c0, FW_VER_7_45_189)))
 __attribute__((at(0x5BA28, "flashpatch", CHIP_VER_BCM4339, FW_VER_6_37_32_RC23_34_43_r639704)))
 BPatch(wlc_valid_chanspec_ext, wlc_valid_chanspec_ext_hook)
+
+
+// Overwrite the call to wlc_valid_chanspec_db() in wlc_radar_chanspec():
+//      - clear "quiet" setting for the channel (so that it doesn't get muted)
+//      - returns 0 to signal that it is not a radar sensitive channel
+int
+wlc_radar_chanspec_hook(void* wlc_cmi, unsigned short chanspec)
+{
+    printf("%s: Hook successful!\n", __FUNCTION__);
+    wlc_clr_quiet_chanspec(wlc_cmi, chanspec);
+    return 0;
+}
+__attribute__((at(0x58a0e, "flashpatch", CHIP_VER_BCM43455c0, FW_VER_7_45_189)))
+BLPatch(wlc_valid_chanspec_db, wlc_radar_chanspec_hook);

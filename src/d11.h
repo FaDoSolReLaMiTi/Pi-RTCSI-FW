@@ -15,8 +15,7 @@
  *                                                                         *
  * This file is part of NexMon.                                            *
  *                                                                         *
- * Copyright (c) 2024 NexMon Team                                          *
- * Copyright (c) 2024 Jakob Link <jlink@seemoo.de>                         *
+ * Copyright (c) 2016 NexMon Team                                          *
  *                                                                         *
  * NexMon is free software: you can redistribute it and/or modify          *
  * it under the terms of the GNU General Public License as published by    *
@@ -32,67 +31,58 @@
  * along with NexMon. If not, see <http://www.gnu.org/licenses/>.          *
  *                                                                         *
  **************************************************************************/
-// Modified by Fangzhan for RTCSI
 
-#ifndef LOCAL_WRAPPER_C
-#define LOCAL_WRAPPER_C
+#pragma once
 
-#include <firmware_version.h>
-#include <structs.h>
-#include <stdarg.h>
+struct d11rxhdr {
+	unsigned short RxFrameSize;			/* Actual byte length of the frame data received */
+	unsigned short PAD;
+	unsigned short PhyRxStatus_0;		/* PhyRxStatus 15:0 */
+	unsigned short PhyRxStatus_1;		/* PhyRxStatus 31:16 */
+	unsigned short PhyRxStatus_2;		/* PhyRxStatus 47:32 */
+	unsigned short PhyRxStatus_3;		/* PhyRxStatus 63:48 */
+	unsigned short PhyRxStatus_4;		/* PhyRxStatus 79:64 */
+	unsigned short PhyRxStatus_5;		/* PhyRxStatus 95:80 */
+	unsigned short RxStatus1;			/* MAC Rx status */
+	unsigned short RxStatus2;			/* extended MAC Rx status */
+	unsigned short RxTSFTime;			/* RxTSFTime time of first MAC symbol + M_PHY_PLCPRX_DLY */
+	unsigned short RxChan;				/* gain code, channel radio code, and phy type -> looks like chanspec */
+} __attribute__((packed));
 
-#ifndef LOCAL_WRAPPER_H
-    // if this file is not included in the local_wrapper.h file, create dummy functions
-    #define VOID_DUMMY { ; }
-    #define RETURN_DUMMY { ; return 0; }
+ /* ucode RxStatus1: */
+#define RXS_BCNSENT             0x8000
+#define RXS_SECKINDX_MASK       0x07e0
+#define RXS_SECKINDX_SHIFT      5
+#define RXS_DECERR              (1 << 4)
+#define RXS_DECATMPT            (1 << 3)
+/* PAD bytes to make IP data 4 bytes aligned */
+#define RXS_PBPRES              (1 << 2)
+#define RXS_RESPFRAMETX         (1 << 1)
+#define RXS_FCSERR              (1 << 0)
 
-    #define AT(CHIPVER, FWVER, ADDR) __attribute__((weak, at(ADDR, "dummy", CHIPVER, FWVER)))
-#else
-    // if this file is included in the wrapper.h file, create prototypes
-    #define VOID_DUMMY ;
-    #define RETURN_DUMMY ;
-    #define AT(CHIPVER, FWVER, ADDR)
-#endif
+/* ucode RxStatus2: */
+#define RXS_AMSDU_MASK          1
+#define RXS_AGGTYPE_MASK        0x6
+#define RXS_AGGTYPE_SHIFT       1
+#define RXS_PHYRXST_VALID       (1 << 8)
+#define RXS_RXANT_MASK          0x3
+#define RXS_RXANT_SHIFT         12
 
+/* RxChan */
+#define RXS_CHAN_40             0x1000
+#define RXS_CHAN_5G             0x0800
+#define RXS_CHAN_ID_MASK        0x07f8
+#define RXS_CHAN_ID_SHIFT       3
+#define RXS_CHAN_PHYTYPE_MASK   0x0007
+#define RXS_CHAN_PHYTYPE_SHIFT  0
 
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x219864)
-void
-wlc_phy_force_rfseq_acphy__local(void *pi, uint8 cmd)
-VOID_DUMMY
+struct wlc_d11rxhdr {
+	struct d11rxhdr rxhdr;
+	unsigned int tsf_l;
+	char rssi;							/* computed instanteneous RSSI in BMAC */
+	char rxpwr0;
+	char rxpwr1;
+	char do_rssi_ma;					/* do per-pkt sampling for per-antenna ma in HIGH */
+	char rxpwr[4];						/* rssi for supported antennas */
+} __attribute__((packed));
 
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x217292)
-void
-wlc_phy_resetcca_acphy__local(void *pi)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x1df5a8)
-int
-phy_utils_read_phyreg(void *pi, int addr)
-RETURN_DUMMY
-
-// AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x19A548)
-// void
-// hndrte_print_memuse(void)
-// VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x58950)
-bool
-wlc_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-RETURN_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x49874)
-void
-wlc_bmac_mute(struct wlc_hw_info *wlc_hw, bool on, uint32 flags)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x57b70)
-void
-wlc_clr_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-VOID_DUMMY
-
-
-#undef VOID_DUMMY
-#undef RETURN_DUMMY
-#undef AT
-
-#endif /*LOCAL_WRAPPER_C*/

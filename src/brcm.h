@@ -15,8 +15,7 @@
  *                                                                         *
  * This file is part of NexMon.                                            *
  *                                                                         *
- * Copyright (c) 2024 NexMon Team                                          *
- * Copyright (c) 2024 Jakob Link <jlink@seemoo.de>                         *
+ * Copyright (c) 2016 NexMon Team                                          *
  *                                                                         *
  * NexMon is free software: you can redistribute it and/or modify          *
  * it under the terms of the GNU General Public License as published by    *
@@ -32,67 +31,9 @@
  * along with NexMon. If not, see <http://www.gnu.org/licenses/>.          *
  *                                                                         *
  **************************************************************************/
-// Modified by Fangzhan for RTCSI
 
-#ifndef LOCAL_WRAPPER_C
-#define LOCAL_WRAPPER_C
+#pragma once
 
-#include <firmware_version.h>
-#include <structs.h>
-#include <stdarg.h>
-
-#ifndef LOCAL_WRAPPER_H
-    // if this file is not included in the local_wrapper.h file, create dummy functions
-    #define VOID_DUMMY { ; }
-    #define RETURN_DUMMY { ; return 0; }
-
-    #define AT(CHIPVER, FWVER, ADDR) __attribute__((weak, at(ADDR, "dummy", CHIPVER, FWVER)))
-#else
-    // if this file is included in the wrapper.h file, create prototypes
-    #define VOID_DUMMY ;
-    #define RETURN_DUMMY ;
-    #define AT(CHIPVER, FWVER, ADDR)
-#endif
-
-
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x219864)
-void
-wlc_phy_force_rfseq_acphy__local(void *pi, uint8 cmd)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM4366c0, FW_VER_10_10_122_20, 0x217292)
-void
-wlc_phy_resetcca_acphy__local(void *pi)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x1df5a8)
-int
-phy_utils_read_phyreg(void *pi, int addr)
-RETURN_DUMMY
-
-// AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x19A548)
-// void
-// hndrte_print_memuse(void)
-// VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x58950)
-bool
-wlc_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-RETURN_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x49874)
-void
-wlc_bmac_mute(struct wlc_hw_info *wlc_hw, bool on, uint32 flags)
-VOID_DUMMY
-
-AT(CHIP_VER_BCM43455c0, FW_VER_7_45_189, 0x57b70)
-void
-wlc_clr_quiet_chanspec(void *wlc_cmi, unsigned short chanspec)
-VOID_DUMMY
-
-
-#undef VOID_DUMMY
-#undef RETURN_DUMMY
-#undef AT
-
-#endif /*LOCAL_WRAPPER_C*/
+#include "../include/types.h"
+#define WL_CHANSPEC_CHAN_MASK       0x00ff
+#define CHSPEC_CHANNEL(chspec)  ((uint8_t)((chspec) & WL_CHANSPEC_CHAN_MASK))
